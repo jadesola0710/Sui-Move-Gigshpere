@@ -1,222 +1,223 @@
-/*
-Disclaimer: Use of Unaudited Code for Educational Purposes Only
-This code is provided strictly for educational purposes and has not undergone any formal security audit. 
-It may contain errors, vulnerabilities, or other issues that could pose risks to the integrity of your system or data.
-
-By using this code, you acknowledge and agree that:
-    - No Warranty: The code is provided "as is" without any warranty of any kind, either express or implied. The entire risk as to the quality and performance of the code is with you.
-    - Educational Use Only: This code is intended solely for educational and learning purposes. It is not intended for use in any mission-critical or production systems.
-    - No Liability: In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the use or performance of this code.
-    - Security Risks: The code may not have been tested for security vulnerabilities. It is your responsibility to conduct a thorough security review before using this code in any sensitive or production environment.
-    - No Support: The authors of this code may not provide any support, assistance, or updates. You are using the code at your own risk and discretion.
-
-Before using this code, it is recommended to consult with a qualified professional and perform a comprehensive security assessment. By proceeding to use this code, you agree to assume all associated risks and responsibilities.
-*/
-
-#[lint_allow(self_transfer)]
-module dacade_deepbook::book {
-    use deepbook::clob_v2 as deepbook;
-    use deepbook::custodian_v2 as custodian;
+#[allow(unused_field)]
+module dacade_deepbook::gig_sphere {
+    use std::string::{String};
+    use sui::balance::{Balance, zero};
+    use sui::coin::{Coin, take, put, value as coin_value};
     use sui::sui::SUI;
-    use sui::tx_context::{TxContext, Self};
-    use sui::coin::{Coin, Self};
-    use sui::balance::{Self};
-    use sui::transfer::Self;
-    use sui::clock::Clock;
+    use sui::object::{new};
+    use sui::event;
 
-    const FLOAT_SCALING: u64 = 1_000_000_000;
+    // Error codes
+    const EINVALIDGIG: u64 = 3;   // Invalid gig ID
+    const EUNAUTHORIZED: u64 = 4; // Unauthorized access or invalid user ID
 
-
-    public fun new_pool<Base, Quote>(payment: &mut Coin<SUI>, ctx: &mut TxContext) {
-        let balance = coin::balance_mut(payment);
-        let fee = balance::split(balance, 100 * 1_000_000_000);
-        let coin = coin::from_balance(fee, ctx);
-
-        deepbook::create_pool<Base, Quote>(
-            1 * FLOAT_SCALING,
-            1,
-            coin,
-            ctx
-        );
+    /// Enum representing gig status
+    public enum GigStatus has copy, drop, store {
+        Open,
+        InProgress,
+        Completed,
     }
 
-    public fun new_custodian_account(ctx: &mut TxContext) {
-        transfer::public_transfer(deepbook::create_account(ctx), tx_context::sender(ctx))
+    /// User structure for storing user details
+    public struct User has store {
+        id: u64,              // User ID
+        name: String,         // Name
+        balance: Balance<SUI>, // SUI balance
+        posted_gigs: vector<u64>, // User's posted gigs
+        applied_gigs: vector<u64>, // User's applied gigs
     }
 
-    public fun make_base_deposit<Base, Quote>(pool: &mut deepbook::Pool<Base, Quote>, coin: Coin<Base>, account_cap: &custodian::AccountCap) {
-        deepbook::deposit_base(pool, coin, account_cap)
+    /// Gig structure for storing gig details
+    public struct Gig has store {
+        id: u64,              // Gig ID
+        description: String,  // Gig description
+        payment: u64,         // Payment amount
+        deadline: u64,        // Deadline for completion
+        poster_id: u64,       // Poster ID
+        applicant_ids: vector<u64>, // Applicant IDs
+        status: GigStatus,    // Gig status
     }
 
-    public fun make_quote_deposit<Base, Quote>(pool: &mut deepbook::Pool<Base, Quote>, coin: Coin<Quote>, account_cap: &custodian::AccountCap) {
-        deepbook::deposit_quote(pool, coin, account_cap)
+    /// GigManager structure for managing users and gigs
+    public struct GigManager has key, store {
+        id: UID,              // Manager ID
+        balance: Balance<SUI>, // Manager balance
+        gigs: vector<Gig>,    // List of gigs
+        users: vector<User>,  // List of users
+        gig_count: u64,       // Number of gigs
+        user_count: u64,      // Number of users
     }
 
-    public fun withdraw_base<BaseAsset, QuoteAsset>(
-        pool: &mut deepbook::Pool<BaseAsset, QuoteAsset>,
-        quantity: u64,
-        account_cap: &custodian::AccountCap,
+    /// Event for tracking gig posting
+    public struct GigPosted has copy, drop {
+        gig_id: u64,
+        description: String,
+        payment: u64,
+    }
+
+    /// Event for tracking gig applications
+    public struct GigApplied has copy, drop {
+        gig_id: u64,
+        user_id: u64,
+    }
+
+    /// Event for tracking completed gigs
+    public struct GigCompleted has copy, drop {
+        gig_id: u64,
+        applicant_id: u64,
+        payment: u64,
+    }
+
+    /// Event for tracking account funding
+    public struct AccountFunded has copy, drop {
+        user_id: u64,
+        amount: u64,
+    }
+
+    /// Event for tracking gig assignment
+    public struct GigAssigned has copy, drop {
+        gig_id: u64,
+        assigned_to: u64,
+    }
+
+    /// Initialize the GigManager
+    public entry fun create_manager(ctx: &mut TxContext) {
+        let manager_uid = new(ctx);
+        let manager = GigManager {
+            id: manager_uid,
+            balance: zero<SUI>(),
+            gigs: vector::empty(),
+            users: vector::empty(),
+            gig_count: 0,
+            user_count: 0,
+        };
+        transfer::share_object(manager);
+    }
+
+    /// Register a new user
+    public entry fun register_user(
+        manager: &mut GigManager,
+        name: String,
+        _ctx: &mut TxContext
+    ) {
+        let new_user = User {
+            id: manager.user_count,
+            name,
+            balance: zero<SUI>(),
+            posted_gigs: vector::empty(),
+            applied_gigs: vector::empty(),
+        };
+        vector::push_back(&mut manager.users, new_user);
+        manager.user_count = manager.user_count + 1;
+    }
+
+    /// Post a new gig
+    public entry fun post_gig(
+        manager: &mut GigManager,
+        user_id: u64,
+        description: String,
+        payment: u64,
+        deadline: u64,
         ctx: &mut TxContext
     ) {
-        let base = deepbook::withdraw_base(pool, quantity, account_cap, ctx);
-        transfer::public_transfer(base, tx_context::sender(ctx));
+        assert!(user_id < vector::length(&manager.users), EUNAUTHORIZED);
+        let user = vector::borrow_mut(&mut manager.users, user_id);
+
+        // Verify user's balance
+        let temp_coin = take(&mut user.balance, payment, ctx);
+        let user_balance_value = coin_value(&temp_coin);
+        put(&mut user.balance, temp_coin);
+        assert!(user_balance_value >= payment, EUNAUTHORIZED);
+
+        // Transfer payment to manager
+        let funds = take(&mut user.balance, payment, ctx);
+        put(&mut manager.balance, funds);
+
+        // Create and add new gig
+        let new_gig = Gig {
+            id: manager.gig_count,
+            description,
+            payment,
+            deadline,
+            poster_id: user_id,
+            applicant_ids: vector::empty(),
+            status: GigStatus::Open,
+        };
+        vector::push_back(&mut manager.gigs, new_gig);
+        vector::push_back(&mut user.posted_gigs, manager.gig_count);
+        manager.gig_count = manager.gig_count + 1;
+
+        // Emit GigPosted event
+        event::emit(GigPosted {
+            gig_id: manager.gig_count - 1,
+            description,
+            payment,
+        });
     }
 
-    public fun withdraw_quote<BaseAsset, QuoteAsset>(
-        pool: &mut deepbook::Pool<BaseAsset, QuoteAsset>,
-        quantity: u64,
-        account_cap: &custodian::AccountCap,
-        ctx: &mut TxContext
+    /// Assign a gig to a user
+    public entry fun assign_gig(
+        manager: &mut GigManager,
+        gig_id: u64,
+        user_id: u64,
+        _ctx: &mut TxContext
     ) {
-        let quote = deepbook::withdraw_quote(pool, quantity, account_cap, ctx);
-        transfer::public_transfer(quote, tx_context::sender(ctx));
+        assert!(gig_id < vector::length(&manager.gigs), EINVALIDGIG);
+        assert!(user_id < vector::length(&manager.users), EUNAUTHORIZED);
+        let gig = vector::borrow_mut(&mut manager.gigs, gig_id);
+        assert!(gig.status == GigStatus::Open, EUNAUTHORIZED);
+
+        assert!(gig.poster_id != user_id, EUNAUTHORIZED);
+
+        gig.status = GigStatus::InProgress;
+        if (!vector::contains(&gig.applicant_ids, &user_id)) {
+            vector::push_back(&mut gig.applicant_ids, user_id);
+        }
     }
 
-    public fun place_limit_order<Base, Quote>(
-        pool: &mut deepbook::Pool<Base, Quote>,
-        client_order_id: u64,
-        price: u64, 
-        quantity: u64, 
-        self_matching_prevention: u8,
-        is_bid: bool,
-        expire_timestamp: u64,
-        restriction: u8,
-        clock: &Clock,
-        account_cap: &custodian::AccountCap,
-        ctx: &mut TxContext
-    ): (u64, u64, bool, u64) {
-        deepbook::place_limit_order(
-            pool, 
-            client_order_id, 
-            price, 
-            quantity, 
-            self_matching_prevention, 
-            is_bid, 
-            expire_timestamp, 
-            restriction, 
-            clock, 
-            account_cap, 
-            ctx
-        )
-    }
-
-    public fun place_base_market_order<Base, Quote>(
-        pool: &mut deepbook::Pool<Base, Quote>,
-        account_cap: &custodian::AccountCap,
-        base_coin: Coin<Base>,
-        client_order_id: u64,
-        is_bid: bool,
-        clock: &Clock,
-        ctx: &mut TxContext,
+    /// Fund user account
+    public entry fun fund_account(
+        manager: &mut GigManager,
+        user_id: u64,
+        coins: Coin<SUI>,
+        _ctx: &mut TxContext
     ) {
-        let quote_coin = coin::zero<Quote>(ctx);
-        let quantity = coin::value(&base_coin);
-        place_market_order(
-            pool,
-            account_cap,
-            client_order_id,
-            quantity,
-            is_bid,
-            base_coin,
-            quote_coin,
-            clock,
-            ctx
-        )
+        assert!(user_id < vector::length(&manager.users), EUNAUTHORIZED);
+        let user = vector::borrow_mut(&mut manager.users, user_id);
+
+        let amount = coin_value(&coins);
+        put(&mut user.balance, coins);
+
+        event::emit(AccountFunded {
+            user_id,
+            amount,
+        });
     }
 
-    public fun place_quote_market_order<Base, Quote>(
-        pool: &mut deepbook::Pool<Base, Quote>,
-        account_cap: &custodian::AccountCap,
-        quote_coin: Coin<Quote>,
-        client_order_id: u64,
-        is_bid: bool,
-        clock: &Clock,
-        ctx: &mut TxContext,
-    ) {
-        let base_coin = coin::zero<Base>(ctx);
-        let quantity = coin::value(&quote_coin);
-        place_market_order(
-            pool,
-            account_cap,
-            client_order_id,
-            quantity,
-            is_bid,
-            base_coin,
-            quote_coin,
-            clock,
-            ctx
-        )
-    }
+/// Complete a gig and transfer payment
+public entry fun complete_gig(
+    manager: &mut GigManager,
+    gig_id: u64,
+    applicant_id: u64,
+    ctx: &mut TxContext
+) {
+    assert!(gig_id < vector::length(&manager.gigs), EINVALIDGIG);
 
-    fun place_market_order<Base, Quote>(
-        pool: &mut deepbook::Pool<Base, Quote>,
-        account_cap: &custodian::AccountCap,
-        client_order_id: u64,
-        quantity: u64,
-        is_bid: bool,
-        base_coin: Coin<Base>,
-        quote_coin: Coin<Quote>,
-        clock: &Clock, // @0x6 hardcoded id of the Clock object
-        ctx: &mut TxContext,
-    ) {
-        let (base, quote) = deepbook::place_market_order(
-            pool, 
-            account_cap, 
-            client_order_id, 
-            quantity, 
-            is_bid, 
-            base_coin, 
-            quote_coin, 
-            clock, 
-            ctx
-        );
-        transfer::public_transfer(base, tx_context::sender(ctx));
-        transfer::public_transfer(quote, tx_context::sender(ctx));
-    }
+    let gig = vector::borrow_mut(&mut manager.gigs, gig_id);
+    assert!(gig.status == GigStatus::InProgress, EUNAUTHORIZED);
+    assert!(vector::contains(&gig.applicant_ids, &applicant_id), EUNAUTHORIZED);
 
-    public fun swap_exact_base_for_quote<Base, Quote>(
-        pool: &mut deepbook::Pool<Base, Quote>,
-        client_order_id: u64,
-        account_cap: &custodian::AccountCap,
-        quantity: u64,
-        base_coin: Coin<Base>,
-        clock: &Clock,
-        ctx: &mut TxContext
-    ) {
-        let quote_coin = coin::zero<Quote>(ctx);
-        let (base, quote, _) = deepbook::swap_exact_base_for_quote(
-            pool,
-            client_order_id,
-            account_cap,
-            quantity,
-            base_coin,
-            quote_coin,
-            clock,
-            ctx
-        );
-        transfer::public_transfer(base, tx_context::sender(ctx));
-        transfer::public_transfer(quote, tx_context::sender(ctx));
-    }
+    gig.status = GigStatus::Completed;
 
-    public fun swap_exact_quote_for_base<Base, Quote>(
-        pool: &mut deepbook::Pool<Base, Quote>,
-        account_cap: &custodian::AccountCap,
-        quote_coin: Coin<Quote>,
-        client_order_id: u64,
-        quantity: u64,
-        clock: &Clock,
-        ctx: &mut TxContext,
-    ) {
-        let (base, quote, _) = deepbook::swap_exact_quote_for_base(
-            pool,
-            client_order_id,
-            account_cap,
-            quantity,
-            clock,
-            quote_coin,
-            ctx
-        );
-        transfer::public_transfer(base, tx_context::sender(ctx));
-        transfer::public_transfer(quote, tx_context::sender(ctx));
-    }
+    let payment = take(&mut manager.balance, gig.payment, ctx);
+    let applicant = vector::borrow_mut(&mut manager.users, applicant_id);
+    put(&mut applicant.balance, payment);
+
+    event::emit(GigCompleted {
+        gig_id,
+        applicant_id,
+        payment: gig.payment,
+    });
+}
+
 }
