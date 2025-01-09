@@ -1,5 +1,5 @@
 #[allow(unused_field)]
-module dacade_deepbook::gig_sphere {
+module gig_sphere::gig_sphere {
     use std::string::{String};
     use sui::balance::{Balance, zero};
     use sui::coin::{Coin, take, put, value as coin_value};
@@ -7,9 +7,10 @@ module dacade_deepbook::gig_sphere {
     use sui::object::{new};
     use sui::event;
 
-    // Error codes
-    const EINVALIDGIG: u64 = 3;   // Invalid gig ID
-    const EUNAUTHORIZED: u64 = 4; // Unauthorized access or invalid user ID
+
+
+    const EINVALIDGIG: u64 = 3;   
+    const EUNAUTHORIZED: u64 = 4; 
 
     /// Enum representing gig status
     public enum GigStatus has copy, drop, store {
@@ -40,13 +41,15 @@ module dacade_deepbook::gig_sphere {
 
     /// GigManager structure for managing users and gigs
     public struct GigManager has key, store {
-        id: UID,              // Manager ID
-        balance: Balance<SUI>, // Manager balance
-        gigs: vector<Gig>,    // List of gigs
-        users: vector<User>,  // List of users
-        gig_count: u64,       // Number of gigs
-        user_count: u64,      // Number of users
+    id: UID,                  // Manager ID
+    balance: Balance<SUI>,    // Manager balance
+    gigs: vector<Gig>,        // List of gigs
+    users: vector<User>,      // List of users
+    gig_count: u64,           // Number of gigs
+    user_count: u64,          // Number of users
+    owner: address,           // Owner address
     }
+
 
     /// Event for tracking gig posting
     public struct GigPosted has copy, drop {
@@ -82,17 +85,19 @@ module dacade_deepbook::gig_sphere {
 
     /// Initialize the GigManager
     public entry fun create_manager(ctx: &mut TxContext) {
-        let manager_uid = new(ctx);
-        let manager = GigManager {
-            id: manager_uid,
-            balance: zero<SUI>(),
-            gigs: vector::empty(),
-            users: vector::empty(),
-            gig_count: 0,
-            user_count: 0,
-        };
-        transfer::share_object(manager);
-    }
+    let manager_uid = new(ctx);
+    let manager = GigManager {
+        id: manager_uid,
+        balance: zero<SUI>(),
+        gigs: vector::empty(),
+        users: vector::empty(),
+        gig_count: 0,
+        user_count: 0,
+        owner: tx_context::sender(ctx), // Set owner to the transaction sender
+    };
+    transfer::share_object(manager);
+}
+
 
     /// Register a new user
     public entry fun register_user(
@@ -155,25 +160,42 @@ module dacade_deepbook::gig_sphere {
         });
     }
 
-    /// Assign a gig to a user
-    public entry fun assign_gig(
-        manager: &mut GigManager,
-        gig_id: u64,
-        user_id: u64,
-        _ctx: &mut TxContext
-    ) {
-        assert!(gig_id < vector::length(&manager.gigs), EINVALIDGIG);
-        assert!(user_id < vector::length(&manager.users), EUNAUTHORIZED);
-        let gig = vector::borrow_mut(&mut manager.gigs, gig_id);
-        assert!(gig.status == GigStatus::Open, EUNAUTHORIZED);
+/// Assign a gig to a user
+public entry fun assign_gig(
+    manager: &mut GigManager,
+    gig_id: u64,
+    user_id: u64,
+    ctx: &mut TxContext
+) {
+    // Verify the caller is the owner
+    assert!(manager.owner == tx_context::sender(ctx), EUNAUTHORIZED);
 
-        assert!(gig.poster_id != user_id, EUNAUTHORIZED);
+    // Validate gig and user IDs
+    assert!(gig_id < vector::length(&manager.gigs), EINVALIDGIG);
+    assert!(user_id < vector::length(&manager.users), EUNAUTHORIZED);
 
-        gig.status = GigStatus::InProgress;
-        if (!vector::contains(&gig.applicant_ids, &user_id)) {
-            vector::push_back(&mut gig.applicant_ids, user_id);
-        }
-    }
+    let gig = vector::borrow_mut(&mut manager.gigs, gig_id);
+    assert!(gig.status == GigStatus::Open, EUNAUTHORIZED);
+
+    // Prevent assigning gig to poster
+    assert!(gig.poster_id != user_id, EUNAUTHORIZED);
+
+    // Add the user as an applicant (if not already added) and update status
+    if (!vector::contains(&gig.applicant_ids, &user_id)) {
+        vector::push_back(&mut gig.applicant_ids, user_id);
+    };
+
+    
+    gig.status = GigStatus::InProgress;
+
+    // Emit an event
+    event::emit(GigAssigned {
+        gig_id,
+        assigned_to: user_id,
+    });
+}
+
+
 
     /// Fund user account
     public entry fun fund_account(
@@ -201,23 +223,34 @@ public entry fun complete_gig(
     applicant_id: u64,
     ctx: &mut TxContext
 ) {
+    // Verify the caller is the owner
+    assert!(manager.owner == tx_context::sender(ctx), EUNAUTHORIZED);
+
+    // Validate gig ID
     assert!(gig_id < vector::length(&manager.gigs), EINVALIDGIG);
 
     let gig = vector::borrow_mut(&mut manager.gigs, gig_id);
     assert!(gig.status == GigStatus::InProgress, EUNAUTHORIZED);
+
+    // Ensure the applicant was part of the gig
     assert!(vector::contains(&gig.applicant_ids, &applicant_id), EUNAUTHORIZED);
 
+    // Update gig status
     gig.status = GigStatus::Completed;
 
+    // Transfer payment to the applicant
     let payment = take(&mut manager.balance, gig.payment, ctx);
     let applicant = vector::borrow_mut(&mut manager.users, applicant_id);
     put(&mut applicant.balance, payment);
 
+    // Emit an event
     event::emit(GigCompleted {
         gig_id,
         applicant_id,
         payment: gig.payment,
     });
 }
+
+
 
 }
